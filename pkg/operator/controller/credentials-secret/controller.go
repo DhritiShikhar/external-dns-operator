@@ -18,7 +18,10 @@ package credentials_secret
 
 import (
 	"context"
+	"crypto/sha1"
+	"encoding/hex"
 	"fmt"
+	"sort"
 
 	"k8s.io/apimachinery/pkg/api/errors"
 	"sigs.k8s.io/controller-runtime/pkg/event"
@@ -237,6 +240,17 @@ func (r *reconciler) Reconcile(ctx context.Context, request reconcile.Request) (
 		return reconcile.Result{}, fmt.Errorf("failed to ensure credentials secret for externalDNS %q: %w", extDNS.Name, err)
 	}
 
+	srcSecret, _ := getExternalDNSCredentialsSecret(extDNS, r.config.IsOpenShift)
+	if errors.IsNotFound(err) {
+		reqLogger.Info("secret credential not found")
+		return reconcile.Result{}, nil
+	}
+
+	secretHash, err := buildSecretHash()
+	if err != nil {
+		return nil, err
+	}
+
 	reqLogger.Info("credentials secret is reconciled for externalDNS instance")
 
 	return reconcile.Result{}, nil
@@ -246,6 +260,12 @@ func (r *reconciler) Reconcile(ctx context.Context, request reconcile.Request) (
 func hasSecret(o client.Object, isOpenShift bool) bool {
 	ed := o.(*operatorv1alpha1.ExternalDNS)
 	return len(getExternalDNSCredentialsSecretName(ed, isOpenShift)) != 0
+}
+
+// getExternalDNSCredentialsSecret returns the credentials secret resource
+func getExternalDNSCredentialsSecret(externalDNS *operatorv1alpha1.ExternalDNS, isOpenShift bool) *corev1.Secret {
+	name, _ := getExternalDNSCredentialsSecret(externalDNS, isOpenShift)
+	return name
 }
 
 // getExternalDNSCredentialsSecretName returns the name of the credentials secret which should be used as source
@@ -266,4 +286,25 @@ func getExternalDNSCredentialsSecretNameWithTrace(externalDNS *operatorv1alpha1.
 	}
 
 	return "", false
+}
+
+// buildSecretHash is a utility function to get a checksum of the resource data
+func buildSecretHash(data map[string][]byte) (string, error) {
+	keys := make([]string, 0, len(data))
+	for k := range data {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	hash := sha1.New()
+	for _, k := range keys {
+		_, err := hash.Write([]byte(k))
+		if err != nil {
+			return "", err
+		}
+		_, err = hash.Write(data[k])
+		if err != nil {
+			return "", err
+		}
+	}
+	return hex.EncodeToString(hash.Sum(nil)), nil
 }
